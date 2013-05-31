@@ -1,0 +1,280 @@
+float DELTA = 0.01;
+float THRESHOLD = 0.1;
+
+float4x4 matModelView : state.matrix.modelview;
+float4x4 matModelViewProj : state.matrix.mvp;
+/*頂点の正体。ブロックインデックスぽい頂点群をCgに渡している。計算を楽にするためと思われる。これはブロック一個一個の頂点だ。
+//（100,110,111,101）,(110,010,011,111),(001,101,111,011),(000,001,011,010),(000,100,101,001),(000,010,110,100)
+
+*/
+void vertex(float3 texCoord0 : POSITION,
+  		float3 block     : COLOR,//glColor3f((float)this->x,(float)this->y,(float)this->z);ブロックインデックス
+			uniform float3  BNUM,
+			uniform float3 BR,
+			uniform float3 INIBN,
+			out float4 outPosition    : POSITION,
+			out float4 outTexCoord0   : TEXCOORD0,//fragment shaderでtex3D()で参照にするテクスチャ座標になる。
+			out float3 outObjposition : TEXCOORD1,
+			out float3 outBlockpos    : TEXCOORD2,
+			out float3  outBNUM        : TEXCOORD3,
+			out float3 outBR          : TEXCOORD4,
+			out float3 outINIBN       : TEXCOORD5,
+			out float4 outColor:COLOR
+			)
+{
+
+
+	outTexCoord0.xyz  = texCoord0;
+	outTexCoord0.w    = 1.0;
+
+
+	outBlockpos  = (2.0*block-BNUM)*BR*INIBN/BNUM;//-1〜1の範囲の値になる。あとでレイのdirectionで使う
+	float3 pos = outBlockpos + 2.0*texCoord0*BR*INIBN/BNUM; //ブロックインデックスに応じて頂点の位置を変える。
+
+
+	outPosition = mul(matModelViewProj,float4(pos,1.0));//POSITION
+	outObjposition = mul(matModelView, float4(pos,1.0)).xyz;//TEXCOORD1
+
+
+	outBNUM = BNUM;
+	outBR   = BR;
+	outINIBN = INIBN;
+	outColor=float4(0.0,1.0,1.0,1.0);
+
+}
+//POSITIONとして入ってくる値
+//（100,110,111,101）,(110,010,011,111),(001,101,111,011)
+//,(000,001,011,010),(000,100,101,001),(000,010,110,100)
+//この座標からバーテックスシェーダで座標変換する。
+//block:COLORとして入ってくる値。
+//000,100,010,110,001,101,011,111
+float3 shading(float3 N, float3 V,float3 L,float3 inputColor){
+
+	//material properties
+	float3 Ka = inputColor*1.2;//float3(0.08,0.33,0.29);//ambient
+	//float3 Ka = 0.3*resoColor;//ambient 環境光成分　暗い部分。
+	float3 Kd = inputColor;//float3(1.0,1.0,1.0);//diffuse 明るい部分。ざらついた光沢のない物体表面で起こる光の反射
+	//float3 Kd = 0.6*resoColor;//diffuse　拡散反射成分
+	float3 Ks = inputColor*0.8;//float3(0.1,0.8,0.68);//specular　中間色 鏡面反射成分
+	float  n  =  100.0;//shininess
+
+	//light properties
+	float3 lightColor = float3(1.0,1.0,1.0);//明るい色。diffuseに関わる。
+	float3 ambientLight = float3(0.3,0.3,0.3);//	暗い部分 環境光反射成分
+
+	//Calculate halfway vector
+	float3 H = normalize(L + V);
+
+	//ambient term
+	float3 ambient = Ka * ambientLight;
+
+	//Compute the diffuse term 
+	float diffuseLight = max(dot(L,N),0);
+	float3 diffuse = Kd * lightColor * diffuseLight;
+
+	// Specular term
+	float specularLight = pow(max(dot(H, N), 0), n);
+	if (diffuseLight <= 0)
+			specularLight = 0;
+	float3 specular = Ks * lightColor * specularLight;
+
+	return ambient + diffuse + specular;
+}
+
+
+float4 fragment(
+				float3 Position    : WPOS,
+				float4 TexCoord0   : TEXCOORD0,
+				float3 objPosition : TEXCOORD1,//シェーディングに使う。
+				float3 blockpos    : TEXCOORD2,//directionに使う。
+				float3  BNUM        : TEXCOORD3,//１辺あたりのブロックの数(2,2,1)(4,4,2)(8,8,4)
+				float3 BR          : TEXCOORD4,//(1,1,1)
+				float3 INIBN       : TEXCOORD5,//(1,1,1)
+				uniform sampler3D vdecal,
+				uniform sampler1D transfer_function,
+				uniform samplerRECT fdecal,
+				uniform float3 globalAmbient,
+				uniform float3 lightColor,
+				uniform float3 lightPosition,
+				uniform float3 eyePosition,
+				uniform float3 Ke,
+				uniform float3 Ka,
+				uniform float3 Kd,
+				uniform float3 Ks,
+				uniform float  shininess,   
+				uniform float4x4 matModelViewNormal,//モデルビュー行列の逆行列で転置したものらしい。
+				uniform float3 camera,
+				uniform float  stepsize,//0.005
+				uniform float3 volExtentMin,//(0,0,0)
+				uniform float3 volExtentMax,//(1.1.1)		
+				uniform float  rscl,
+				uniform float4 resoColor,
+				uniform float  renderAlpha,//１とか0.5
+				uniform float3 renderBeta,//(0,0,0)たまに成分が1になる。
+				uniform float farSlice,
+				uniform int rayLoop,//800
+				uniform float srcDiv,
+				uniform float3 BL//(64,64,64)1ブロックあたりのボクセルの数。
+				) : COLOR
+{
+
+
+	float value;
+	float scalar;
+	// Initialize accumulated color and opacity
+	//float4 dst = texRECT(fdecal,Position.xy);
+	float4 dst=float4(0.0,0,0,0);
+	// Determine volume entry position
+	float3 position = TexCoord0.xyz*BR; //tex3D()で参照するテクスチャ座標に関わる値。 BR=(1,1,1)　いつも
+	// Compute ray direction
+	float3 direction = (blockpos + 2.0*position*INIBN/BNUM)-camera; //ワールド座標で作成 
+	//INIBN＝(1,1,1)　BNUM=１辺あたりのブロックの数(2,2,1)(4,4,2)(8,8,4)
+	direction = normalize(direction);
+	
+	// Loop for ray traversal
+	for (int i=0; i < rayLoop; i++)          //Some large number
+	{
+		
+		//Data access to scalar value in 3D volume texture
+		float3 tc = renderAlpha*((position/BR)+renderBeta);  //低解像度補完を考慮してテクスチャ座標計算 ないとなぜかモロモロの絵になる
+		tc = tc*(BL/(BL+2.0))+1.0/BL; //ブリック分を計算　//BL=(64,64,64)1ブロックあたりのボクセルの数。
+		value = tex3D(vdecal, tc).a;
+		//scalar = value*rscl/srcDiv;
+		scalar = value;
+		//scalar = value*rscl;
+
+		float4 src = float4(1.0,1.0,1.0,scalar); 
+		src=tex1D(transfer_function,scalar);
+		if(src.a >THRESHOLD)
+		{
+			if (dst.a > 0.95)
+			break;
+
+			float3 sample1, sample2;
+
+			sample1.x = tex3D(vdecal,tc-float3(DELTA,0.0,0.0)).a;
+			sample2.x = tex3D(vdecal,tc+float3(DELTA,0.0,0.0)).a;
+			sample1.y = tex3D(vdecal,tc-float3(0.0,DELTA,0.0)).a;
+			sample2.y = tex3D(vdecal,tc+float3(0.0,DELTA,0.0)).a;
+			sample1.z = tex3D(vdecal,tc-float3(0.0,0.0,DELTA)).a;
+			sample2.z = tex3D(vdecal,tc+float3(0.0,0.0,DELTA)).a;
+
+		
+			float3 N = normalize(sample2-sample1);
+			N = -N;//matModelViewNormal:モデルビュー行列の逆行列で転置したものらしい。
+			N = normalize(mul(matModelViewNormal,float4(N,0.0)).xyz).xyz;
+			float3 L = normalize(lightPosition - objPosition);
+			float3 V = normalize(eyePosition - objPosition);
+			
+			
+			src.xyz = shading(N,V,L,src.xyz);
+			src.w = 0.5;
+			//src.w = scalar;
+		}
+		else{
+			src = float4(0.0,0.0,0.0,0.0);}
+		// Front-to-back compositing
+		dst.xyz = (1.0-dst.a) * src.a * src.xyz + dst.xyz;
+
+		dst.a   = (1.0-dst.a)  * src.a   + dst.a;
+
+
+		// Advance ray position along ray direction
+		position = position + direction * stepsize;
+//これはなんだ？
+		float3 worldPos = blockpos + 2.0*position*INIBN/BNUM;
+		worldPos = mul(matModelView,float4(worldPos,1.0)).xyz;
+		if( -worldPos.z > farSlice)
+			break;//消してもあんまり支障なく見える
+
+
+		// Ray termination; Test if outside volume ...
+		float3 temp1 = sign(position-volExtentMin);
+		float3 temp2 = sign(volExtentMax - position);
+		float inside = dot(temp1,temp2);
+		// ... and exit loop
+		if (inside < 3.0)
+			break;
+	}
+	//dst=float4(0.3,0.3,1.0,0.２5);
+	return dst;
+}
+
+void vertex_slice(  float2 Vin : POSITION,
+				  float3 block : COLOR,
+				  uniform float3  BNUM,
+				  uniform float3 BR,
+				  uniform float3 INIBN,
+				  uniform float		dPlaneStart,
+				  uniform int			frontIdx,                 //updated per frame
+				  uniform float3		vecView,	
+				  uniform float			nSequence[64],			  
+				  uniform float3		vecVertices[8],
+				  uniform float			v1[24],
+				  uniform float			v2[24],
+				  out float4			VertexOut   :  POSITION,
+				  out float4			TexCoordOut :  TEXCOORD0,
+				  out float3          objPositionOut : TEXCOORD1,
+				  out float3 outBlockpos    : TEXCOORD2,
+				  out float3  outBNUM        : TEXCOORD3,
+				  out float3 outBR         : TEXCOORD4,
+				  out float3 outINIBN       : TEXCOORD5,
+				  out float4 outColor:COLOR
+				  ) {
+
+
+					  //ブロック座標展開 ブロックインデックスからブロック左下隅の座標を割り出す
+					  outBlockpos = (2.0*block-BNUM)*BR*INIBN/BNUM;
+					  outBNUM = BNUM;
+					  outBR  = BR;
+					  outINIBN = INIBN;
+
+
+
+					  float dPlane = dPlaneStart;
+					  //立方体とスライス面の交点
+					  float3 Position = {0.0,0.0,0.0};
+					  //各経路上の頂点を１点ずつたどる
+					  for(int e = 0; e < 4; ++e){
+
+						  int vidx1 = int(nSequence[int(frontIdx * 8 + int(v1[Vin.x * 4 +e]))]);
+						  int vidx2 = int(nSequence[int(frontIdx * 8 + int(v2[Vin.x * 4 +e]))]);
+						  float3 vecV1 = outBlockpos + 2.0*vecVertices[vidx1]*BR*INIBN/BNUM;
+						  float3 vecV2 = outBlockpos + 2.0*vecVertices[vidx2]*BR*INIBN/BNUM;
+						  float3 vecStart = vecV1;
+						  float3 vecDir = vecV2-vecV1;
+						  float denom = dot(vecDir,vecView);
+						  float lambda = (denom!= 0.0) ?
+							  (dPlane-dot(vecStart,vecView))/denom : -1.0;
+						  if((lambda >= 0.0) && (lambda <= 1.0)) {
+							  Position = vecStart + lambda * vecDir;
+							  break;
+						  }
+					  }
+
+
+					  TexCoordOut.xyz = (Position-outBlockpos)*BNUM/(2.0*(BR*INIBN));
+					  TexCoordOut.w   = 1.0;
+
+					  VertexOut = mul(matModelViewProj,float4(Position,1.0));
+					  VertexOut.z += 0.01;
+					  objPositionOut = mul(matModelView, float4(Position,1.0)).xyz;
+
+					  outColor=float4(1.0,0.0,1.0,1.0);
+					  //return;
+}
+
+
+float4 fragment_occlusion(float3 Position    : WPOS,
+				float4 TexCoord0   : TEXCOORD0,
+				float3 objPosition : TEXCOORD1,
+				float3 blockpos    : TEXCOORD2,
+				float3  BNUM        : TEXCOORD3,
+				float3 BR          : TEXCOORD4,
+				float3 INIBN       : TEXCOORD5,//これは要らないよ
+				uniform samplerRECT fdecal//フレームバッファ
+				) : COLOR
+{
+	return texRECT(fdecal,Position);
+}
+
