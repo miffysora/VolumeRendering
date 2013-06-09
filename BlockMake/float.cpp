@@ -1,4 +1,4 @@
-#include "header.h"
+#include "float.h"
 
 void makeLowerResolutionFile(){
 wchar_t *wc = new wchar_t[volumefile.size()+1];
