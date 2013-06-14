@@ -1,4 +1,10 @@
 #pragma once
+#include <iostream>
+#include <fstream>
+#include <assert.h>
+#ifndef MIFFYSHADER
+#include <miffy/gl/shaderutility.h>
+#endif
 #include <map>
 #ifndef __GLEW_H__
 #include <GL/glew.h>
@@ -11,11 +17,12 @@ using namespace std;
 #include <miffy/math/color.h>
 #endif
 
-#include <miffy/gl/glutility.h>
+
 #include <miffy/volren/glvolren.h>
+#include <miffy/math/cube.h>
 using namespace miffy;
 /*!
-  @brief シェーダ上でのIDとデータをまとめておく。
+	@brief シェーダ上でのIDとデータをまとめておく。
 	この構造体を使うのは、GUIから頻繁にアクセスしなきゃいけないようなやつ
 	RayCastingにしてから、閾値をインタラクティブに変えることができた
 */
@@ -41,16 +48,20 @@ public:
 		glTexSubImage3D( GL_TEXTURE_3D, 0,0,0,0, _xy, _xy, _z, GL_LUMINANCE, _type, _data );
 		//Set3DTexParameter();
 	}
-	void Draw();
+	void Draw(float _zoom);
 private:
 	void GetLocations();
-
+	cube<float> m_boundingbox;
 private:
-	
+	GLuint m_SimpleVertexShader;
+	GLuint m_SliceVertexShader;
+	GLuint m_FragmentShader;
+
 public:
 	unsigned int  m_Program;//本体
+	unsigned int  m_SliceProgram;//本体
 	unsigned int m_TexId;
 	float m_threshold;
-	map<string,int> m_Map;//名前と値loc
+	map<string,int> m_Map[2];//名前と値loc
 };
 
