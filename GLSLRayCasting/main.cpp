@@ -25,15 +25,23 @@ using namespace std;
 #include <miffy/math/vec4.h>
 #include<miffy/math/matrix.h>
 #include <miffy/math/quaternion.h>
+using namespace miffy;
+#include "GLSLRayCasting.h"
 #define M_PI 6*asin( 0.5 )
-
+static bool GetGLError(const char* op) {
+		for (GLint error = glGetError(); error; error= glGetError()) {
+			printf("after %s %s\n",op,gluErrorString(error));
+			abort();//assert(!"!glError\n");
+			return true;
+		}
+		return false;
+	}
 const int nVoxelZ=256;
 #define FILENAME "../../../data/raw/uchar/bonsai.raw"
 #pragma comment(lib,"GLFW.lib")
 #pragma comment(lib,"glew32.lib")
 //const static double M_PI = 4.0*atan(1.0);
-using namespace miffy;
-#include "GLSLRayCasting.h"
+
 class OpenGL{ 
 public:
  mat4<float> m_modelview;
@@ -57,7 +65,7 @@ public:
   quat<float> m_target_quaternion;
     OpenGL(void)
         :m_world_eye_pos(vec3<double>(0.0, 0.0, 9.0))
-        ,m_near(0.1f)
+        ,m_near(1.0f)
         ,m_far(100.0f)
         ,m_fovy(30.0f)
         ,m_zoom(m_world_eye_pos.z)
@@ -94,8 +102,8 @@ public:
 		}
     void display(){
         //描画
-		 //glClearColor(0,0,0,0);
-		glClearColor(0.2,0.2,0.2,1.0);
+		 glClearColor(0,0,0,0);
+		//glClearColor(0.2,0.2,0.2,1.0);
         //glClearColor(1.0,1.0,1.0,1.0);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glMatrixMode(GL_MODELVIEW);
@@ -110,13 +118,24 @@ public:
         m_target_quaternion.toMat4(const_cast<float*>(m_rotation_matrix.m));
         glMultMatrixf(m_rotation_matrix.m);//クォータニオンによる回転
         glEnable(GL_LINE_SMOOTH);
+		glEnable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
         glHint(GL_LINE_SMOOTH_HINT,GL_DONT_CARE);
-		raycastingshader.Draw();
+		
+		raycastingshader.Draw((m_zoom-m_near));
 		glColor4f(1.0,1.0,1.0,1.0);
 		glLineWidth(1.0);
 		glutWireCube(1.0);
+		//スライス断面を描く
+		glBegin(GL_POLYGON);
+        glVertex2f(0.0,0.0);
+        glVertex2f(1.0,0.0);
+        glVertex2f(2.0,0.0);
+        glVertex2f(3.0,0.0);
+        glVertex2f(4.0,0.0);
+        glVertex2f(5.0,0.0);
+		glEnd();
         glDisable(GL_BLEND);
         glDisable(GL_LINE_SMOOTH);
         glPopMatrix();
